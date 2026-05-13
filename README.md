@@ -216,6 +216,7 @@ docker compose run --rm bench
 
 ## Project Docs
 
+- [Algorithm Explained](docs/algorithm.md)
 - [CHANGELOG](CHANGELOG.md)
 - [CONTRIBUTING](CONTRIBUTING.md)
 - [SECURITY](SECURITY.md)
