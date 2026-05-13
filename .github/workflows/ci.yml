@@ -21,8 +21,6 @@ jobs:
         with:
           go-version: ${{ matrix.go-version }}
       - shell: bash
-        run: 'test -z "$(gofmt -l processcache.go internal cmd test)"'
-      - shell: bash
         run: go build ./...
       - shell: bash
         run: go test ./...
@@ -41,6 +39,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: stable
+      - shell: bash
+        run: 'test -z "$(gofmt -l processcache.go internal cmd test)"'
       - shell: bash
         run: go mod tidy
       - shell: bash
