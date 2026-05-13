@@ -1,4 +1,4 @@
 #!/usr/bin/env sh
 set -eu
 
-docker compose run --rm test
+docker compose run --build --rm test

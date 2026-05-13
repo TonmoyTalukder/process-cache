@@ -58,9 +58,6 @@ process-cache/
 │   │   ├── memory.go            # MemoryCache, LRU, eviction, expiration, stats
 │   │   ├── sizer.go             # default sizing
 │   │   └── types.go             # public/internal types, constants, sentinel errors
-│   │
-│   ├── config/
-│   │   └── config.go            # optional config loader for examples/CLI only
 │   └── pkg/
 │       └── testclock/
 │           └── clock.go         # private fake clock for tests
@@ -107,6 +104,7 @@ Root package rule:
 - The single root file, `processcache.go`, contains only public API declarations, type aliases, constants, constructors, and package docs.
 - Implementation details stay under `internal/processcache`.
 - Private support code stays under `internal`.
+- There is no separate `internal/config` package; configuration belongs in `internal/processcache/config.go`.
 - Tests use a top-level `test` folder for unit, integration, and consumer verification.
 - Runnable demos live under `cmd`.
 
@@ -204,6 +202,7 @@ type Config struct {
     Sizer           Sizer
     Clock           Clock
     Metrics         bool
+    CleanupDisabled bool
 }
 
 type TypeLimit struct {
@@ -236,6 +235,7 @@ Sizer:            DefaultSizer
 Clock:            real time clock
 Metrics:          true
 TypeLimits:       none by default
+CleanupDisabled:  false
 ```
 
 Important package boundary decision:
@@ -563,6 +563,7 @@ type Stats struct {
     CurrentSize int64
     MaxSize     int64
     TypeSizes   map[string]int64
+    TypeLimits  map[string]int64
 }
 ```
 
@@ -570,8 +571,10 @@ Rules:
 
 - Counter fields can use atomics.
 - Size and length fields are copied under lock.
-- `TypeSizes` must be copied before returning.
+- `TypeSizes` and `TypeLimits` must be copied before returning.
 - Stats do not expose mutable internal maps.
+- Delete counts explicit removals, including removing an already-expired item.
+- Overwriting an existing key increments `Sets` but not `Deletes` or `Evictions`.
 
 ## 16. Errors
 

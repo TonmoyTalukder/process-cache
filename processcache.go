@@ -12,6 +12,8 @@ const (
 	KB = internal.KB
 	// MB is one mebibyte in bytes.
 	MB = internal.MB
+	// GB is one gibibyte in bytes.
+	GB = internal.GB
 )
 
 var (
@@ -61,10 +63,20 @@ type Stats = internal.Stats
 type Option = internal.Option
 
 // Sizer estimates the cache cost of one entry.
+//
+// Implementations must not call back into the cache; doing so may deadlock.
 type Sizer = internal.Sizer
 
 // Clock provides time to the cache for expiration logic.
+//
+// Implementations must not call back into the cache; doing so may deadlock.
 type Clock = internal.Clock
+
+var (
+	_ Cache = (*MemoryCache)(nil)
+	_ Sizer = internal.DefaultSizer{}
+	_ Clock = internal.RealClock{}
+)
 
 // DefaultConfig returns the package defaults for a new MemoryCache.
 func DefaultConfig() Config {
@@ -124,6 +136,9 @@ func WithMetrics(enabled bool) Option {
 }
 
 // GetAs returns a typed cache value when the key exists and matches T.
+//
+// Cached nil values are observable through Get, but GetAs returns false for
+// them because a nil dynamic value cannot satisfy a concrete type assertion.
 func GetAs[T any](c Cache, key string) (T, bool) {
 	var zero T
 	if c == nil {

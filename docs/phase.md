@@ -30,7 +30,6 @@ Tasks:
 - Create `processcache.go` as the only root `.go` file.
 - Create directories:
   - `internal/processcache`
-  - `internal/config`
   - `internal/pkg/testclock`
   - `cmd/example`
   - `cmd/bench`
@@ -59,7 +58,7 @@ Tasks:
 - Define package `processcache`.
 - Add package documentation.
 - Expose `Cache`, `Config`, `TypeLimit`, `Stats`, `Option`, `Sizer`, and `Clock`.
-- Expose constants `KB` and `MB`.
+- Expose constants `KB`, `MB`, and `GB`.
 - Expose sentinel errors.
 - Expose `NewMemoryCache(opts ...Option) (*MemoryCache, error)`.
 - Expose options:

@@ -16,7 +16,7 @@ func TestCleanupExpiredRemovesExpiredEntries(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Clock = clk
 	cfg.Sizer = fixedSizer(1)
-	cfg.NoCleanup = true
+	cfg.CleanupDisabled = true
 
 	c, err := NewMemoryCacheFromConfig(cfg)
 	if err != nil {

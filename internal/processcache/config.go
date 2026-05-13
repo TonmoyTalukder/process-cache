@@ -28,7 +28,7 @@ func WithCleanupInterval(interval time.Duration) Option {
 
 // WithCleanupDisabled disables the background expiration sweeper.
 func WithCleanupDisabled() Option {
-	return func(c *Config) { c.NoCleanup = true }
+	return func(c *Config) { c.CleanupDisabled = true }
 }
 
 // WithTypeLimit adds one prefix-scoped quota.
@@ -78,7 +78,7 @@ func validateConfig(cfg Config) error {
 	if cfg.MaxSize <= 0 {
 		return fmt.Errorf("%w: %d", ErrInvalidMaxSize, cfg.MaxSize)
 	}
-	if !cfg.NoCleanup && cfg.CleanupInterval <= 0 {
+	if !cfg.CleanupDisabled && cfg.CleanupInterval <= 0 {
 		return fmt.Errorf("%w: %s", ErrInvalidCleanupInterval, cfg.CleanupInterval)
 	}
 	if cfg.Sizer == nil {

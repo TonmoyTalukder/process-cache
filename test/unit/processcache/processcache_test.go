@@ -24,6 +24,15 @@ func (s mapSizer) SizeOf(key string, value any) int64 {
 	return int64(len(key)) + int64(len(fmt.Sprint(value)))
 }
 
+type pairSizer map[string]int64
+
+func (s pairSizer) SizeOf(key string, value any) int64 {
+	if n, ok := s[key+"="+fmt.Sprint(value)]; ok {
+		return n
+	}
+	return int64(len(key)) + int64(len(fmt.Sprint(value)))
+}
+
 func TestConstructorDefaultsAndOptions(t *testing.T) {
 	c, err := processcache.NewMemoryCache(processcache.WithCleanupDisabled())
 	if err != nil {
@@ -57,7 +66,7 @@ func TestConstructorDefaultsAndOptions(t *testing.T) {
 
 	cfg := processcache.DefaultConfig()
 	cfg.MaxSize = 10
-	cfg.NoCleanup = true
+	cfg.CleanupDisabled = true
 	cfg.TypeLimits = []processcache.TypeLimit{{Prefix: "cfg:", MaxSize: 4}}
 	cfg.Sizer = fixedSizer(1)
 	cfg.Clock = clkFromUnix(0)
@@ -213,6 +222,48 @@ func TestOversizedRejections(t *testing.T) {
 	}
 }
 
+func TestOversizedOverwritePreservesExistingValue(t *testing.T) {
+	c, err := processcache.NewMemoryCache(
+		processcache.WithMaxSize(5),
+		processcache.WithTypeLimit("x:", 3),
+		processcache.WithSizer(pairSizer{
+			"ok=small":   2,
+			"ok=big":     6,
+			"x:ok=small": 2,
+			"x:ok=big":   4,
+		}),
+		processcache.WithCleanupDisabled(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	if !c.Set("ok", "small") {
+		t.Fatal("initial global set failed")
+	}
+	if !c.Set("x:ok", "small") {
+		t.Fatal("initial typed set failed")
+	}
+	if c.Set("ok", "big", time.Minute) {
+		t.Fatal("global oversized overwrite accepted")
+	}
+	if got, ok := c.Get("ok"); !ok || got != "small" {
+		t.Fatalf("global overwrite lost prior value: %v %v", got, ok)
+	}
+
+	if c.Set("x:ok", "big", time.Minute) {
+		t.Fatal("typed oversized overwrite accepted")
+	}
+	if got, ok := c.Get("x:ok"); !ok || got != "small" {
+		t.Fatalf("typed overwrite lost prior value: %v %v", got, ok)
+	}
+
+	if stats := c.Stats(); stats.Rejections != 2 {
+		t.Fatalf("Rejections = %d", stats.Rejections)
+	}
+}
+
 func TestExpirationLazyAndBackground(t *testing.T) {
 	clk := testclock.New(time.Unix(0, 0))
 	c, err := processcache.NewMemoryCache(processcache.WithClock(clk), processcache.WithCleanupDisabled(), processcache.WithSizer(fixedSizer(1)))
@@ -227,6 +278,22 @@ func TestExpirationLazyAndBackground(t *testing.T) {
 	}
 	if c.Len() != 0 || c.Stats().Expirations != 1 {
 		t.Fatalf("expiration stats: %+v", c.Stats())
+	}
+}
+
+func TestSetUsesOnlyFirstTTL(t *testing.T) {
+	clk := testclock.New(time.Unix(0, 0))
+	c, err := processcache.NewMemoryCache(processcache.WithClock(clk), processcache.WithCleanupDisabled(), processcache.WithSizer(fixedSizer(1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if !c.Set("k", "v", 10*time.Second, time.Hour) {
+		t.Fatal("Set returned false")
+	}
+	clk.Advance(10 * time.Second)
+	if _, ok := c.Get("k"); ok {
+		t.Fatal("key should expire using the first TTL")
 	}
 }
 
@@ -248,6 +315,38 @@ func TestCloseIdempotentAndMetricsDisabled(t *testing.T) {
 	}
 }
 
+func TestPostCloseOperationsRemainFunctional(t *testing.T) {
+	clk := testclock.New(time.Unix(0, 0))
+	c, err := processcache.NewMemoryCache(
+		processcache.WithClock(clk),
+		processcache.WithCleanupInterval(time.Hour),
+		processcache.WithSizer(fixedSizer(1)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !c.Set("k", "v", time.Second) {
+		t.Fatal("initial set failed")
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := c.Get("k"); !ok || got != "v" {
+		t.Fatalf("post-close hit failed: %v %v", got, ok)
+	}
+	clk.Advance(time.Second)
+	if _, ok := c.Get("k"); ok {
+		t.Fatal("lazy expiration should still apply after Close")
+	}
+	if !c.Set("k2", "v2") {
+		t.Fatal("post-close set failed")
+	}
+	if !c.Exists("k2") {
+		t.Fatal("post-close exists failed")
+	}
+}
+
 func TestStatsAndTypeSizesAreSnapshots(t *testing.T) {
 	c, err := processcache.NewMemoryCache(processcache.WithTypeLimit("p:", 5), processcache.WithSizer(fixedSizer(1)), processcache.WithCleanupDisabled())
 	if err != nil {
@@ -265,6 +364,10 @@ func TestStatsAndTypeSizesAreSnapshots(t *testing.T) {
 	stats.TypeSizes["p:"] = 99
 	if c.Stats().TypeSizes["p:"] == 99 {
 		t.Fatal("TypeSizes map was not copied")
+	}
+	stats.TypeLimits["p:"] = 99
+	if c.Stats().TypeLimits["p:"] == 99 {
+		t.Fatal("TypeLimits map was not copied")
 	}
 }
 

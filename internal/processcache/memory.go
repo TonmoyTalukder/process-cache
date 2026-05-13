@@ -9,8 +9,11 @@ import (
 )
 
 // MemoryCache is a bounded, concurrent in-process LRU cache.
+//
+// The cache preserves exact global and per-prefix LRU order, so operations are
+// synchronized through a single mutex.
 type MemoryCache struct {
-	mu sync.RWMutex
+	mu sync.Mutex
 
 	items     map[string]*item
 	globalLRU *list.List
@@ -88,7 +91,7 @@ func newMemoryCache(cfg Config) *MemoryCache {
 		sizer:           cfg.Sizer,
 		clock:           cfg.Clock,
 		cleanupInterval: cfg.CleanupInterval,
-		cleanupDisabled: cfg.NoCleanup,
+		cleanupDisabled: cfg.CleanupDisabled,
 		stopCleanup:     make(chan struct{}),
 		cleanupDone:     make(chan struct{}),
 		metrics:         cfg.Metrics,
@@ -109,34 +112,17 @@ func newMemoryCache(cfg Config) *MemoryCache {
 
 // Get returns the stored value for key when present and not expired.
 func (c *MemoryCache) Get(key string) (any, bool) {
-	c.mu.RLock()
+	c.mu.Lock()
 	it, ok := c.items[key]
 	if !ok {
-		c.mu.RUnlock()
+		c.mu.Unlock()
 		c.recordMiss()
 		return nil, false
 	}
 	now := c.clock.Now()
 	if it.isExpired(now) {
-		c.mu.RUnlock()
-		c.mu.Lock()
-		if current := c.items[key]; current == it && current.isExpired(now) {
-			c.removeItemLocked(current)
-			c.recordExpiration()
-		}
-		c.mu.Unlock()
-		c.recordMiss()
-		return nil, false
-	}
-	c.mu.RUnlock()
-
-	c.mu.Lock()
-	it, ok = c.items[key]
-	if !ok || it.isExpired(c.clock.Now()) {
-		if ok {
-			c.removeItemLocked(it)
-			c.recordExpiration()
-		}
+		c.removeItemLocked(it)
+		c.recordExpiration()
 		c.mu.Unlock()
 		c.recordMiss()
 		return nil, false
@@ -151,7 +137,8 @@ func (c *MemoryCache) Get(key string) (any, bool) {
 // Set stores value for key and optionally applies one TTL.
 //
 // A missing TTL or a non-positive TTL means the item does not expire. When
-// multiple TTL values are supplied, only the first is used.
+// multiple TTL values are supplied, only the first is used. Callers must not
+// mutate value concurrently with Set or custom Sizer execution.
 func (c *MemoryCache) Set(key string, value any, ttl ...time.Duration) bool {
 	if key == "" {
 		c.recordRejection()
@@ -167,30 +154,37 @@ func (c *MemoryCache) Set(key string, value any, ttl ...time.Duration) bool {
 		expiration = c.clock.Now().Add(ttl[0])
 		hasExpiry = true
 	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if existing := c.items[key]; existing != nil {
-		c.removeItemLocked(existing)
-	}
+	prefix := c.prefixFor(key)
 	if size > c.maxSize {
 		c.recordRejection()
 		return false
 	}
-	prefix := c.prefixFor(key)
 	if prefix != "" && size > c.typeLimits[prefix].MaxSize {
 		c.recordRejection()
 		return false
 	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	existing := c.items[key]
+	if existing != nil {
+		c.removeItemLocked(existing)
+	}
 	for prefix != "" && c.typeSizes[prefix]+size > c.typeLimits[prefix].MaxSize {
 		if !c.evictTypeLRULocked(prefix) {
+			if existing != nil {
+				c.restoreItemLocked(existing)
+			}
 			c.recordRejection()
 			return false
 		}
 	}
 	for c.currentSize+size > c.maxSize {
 		if !c.evictLRULocked() {
+			if existing != nil {
+				c.restoreItemLocked(existing)
+			}
 			c.recordRejection()
 			return false
 		}
@@ -222,28 +216,27 @@ func (c *MemoryCache) Delete(key string) bool {
 
 // Exists reports whether key is present and not expired.
 func (c *MemoryCache) Exists(key string) bool {
-	c.mu.RLock()
+	c.mu.Lock()
 	it, ok := c.items[key]
 	if !ok {
-		c.mu.RUnlock()
+		c.mu.Unlock()
 		return false
 	}
 	now := c.clock.Now()
 	if it.isExpired(now) {
-		c.mu.RUnlock()
-		c.mu.Lock()
-		if current := c.items[key]; current == it && current.isExpired(now) {
-			c.removeItemLocked(current)
-			c.recordExpiration()
-		}
+		c.removeItemLocked(it)
+		c.recordExpiration()
 		c.mu.Unlock()
 		return false
 	}
-	c.mu.RUnlock()
+	c.mu.Unlock()
 	return true
 }
 
 // Clear removes every item from the cache.
+//
+// Clear resets stored entries and size accounting but leaves lifetime counters
+// unchanged.
 func (c *MemoryCache) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -258,20 +251,30 @@ func (c *MemoryCache) Clear() {
 
 // Len returns the number of live entries currently tracked.
 func (c *MemoryCache) Len() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return len(c.items)
 }
 
 // Stats returns a snapshot of counters and capacity usage.
 func (c *MemoryCache) Stats() Stats {
-	c.mu.RLock()
+	c.mu.Lock()
 	typeSizes := make(map[string]int64, len(c.typeSizes))
 	for prefix, size := range c.typeSizes {
 		typeSizes[prefix] = size
 	}
-	stats := Stats{Len: len(c.items), CurrentSize: c.currentSize, MaxSize: c.maxSize, TypeSizes: typeSizes}
-	c.mu.RUnlock()
+	typeLimits := make(map[string]int64, len(c.typeLimits))
+	for prefix, limit := range c.typeLimits {
+		typeLimits[prefix] = limit.MaxSize
+	}
+	stats := Stats{
+		Len:         len(c.items),
+		CurrentSize: c.currentSize,
+		MaxSize:     c.maxSize,
+		TypeSizes:   typeSizes,
+		TypeLimits:  typeLimits,
+	}
+	c.mu.Unlock()
 	stats.Hits = c.stats.hits.Load()
 	stats.Misses = c.stats.misses.Load()
 	stats.Sets = c.stats.sets.Load()
@@ -283,6 +286,9 @@ func (c *MemoryCache) Stats() Stats {
 }
 
 // Close stops the background sweeper and is safe to call more than once.
+//
+// Post-Close cache operations remain available, but background expiration
+// cleanup no longer runs. Lazy expiration on Get and Exists still applies.
 func (c *MemoryCache) Close() error {
 	c.closeOnce.Do(func() {
 		if !c.cleanupDisabled {
@@ -302,6 +308,19 @@ func (c *MemoryCache) prefixFor(key string) string {
 	return ""
 }
 
+func (c *MemoryCache) restoreItemLocked(it *item) {
+	if it == nil {
+		return
+	}
+	it.globalElem = c.globalLRU.PushFront(it)
+	if it.prefix != "" {
+		it.typeElem = c.typeLRUs[it.prefix].PushFront(it)
+		c.typeSizes[it.prefix] += it.size
+	}
+	c.items[it.key] = it
+	c.currentSize += it.size
+}
+
 func (c *MemoryCache) moveToFrontLocked(it *item) {
 	c.globalLRU.MoveToFront(it.globalElem)
 	if it.prefix != "" && it.typeElem != nil {
@@ -309,6 +328,8 @@ func (c *MemoryCache) moveToFrontLocked(it *item) {
 	}
 }
 
+// removeItemLocked updates only structural state; callers record reason-specific
+// counters such as deletes, evictions, or expirations.
 func (c *MemoryCache) removeItemLocked(it *item) {
 	if it == nil {
 		return
@@ -383,14 +404,14 @@ func (c *MemoryCache) startCleanup() {
 
 func (c *MemoryCache) cleanupExpired() {
 	now := c.clock.Now()
-	c.mu.RLock()
+	c.mu.Lock()
 	expiredKeys := make([]string, 0)
 	for _, it := range c.items {
 		if it.isExpired(now) {
 			expiredKeys = append(expiredKeys, it.key)
 		}
 	}
-	c.mu.RUnlock()
+	c.mu.Unlock()
 
 	for _, key := range expiredKeys {
 		c.mu.Lock()

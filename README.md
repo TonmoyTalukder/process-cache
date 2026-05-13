@@ -65,6 +65,7 @@ func main() {
 - O(1) average key lookup with `map[string]*item`.
 - O(1) global LRU eviction using one doubly-linked list.
 - O(1) type-scoped LRU eviction using one doubly-linked list per configured prefix.
+- Exact LRU promotion on successful reads.
 - Lazy expiration on `Get` and `Exists`.
 - Background expiration cleanup.
 - Idempotent `Close`.
@@ -98,7 +99,7 @@ Or start from the exported config defaults:
 ```go
 cfg := processcache.DefaultConfig()
 cfg.MaxSize = 32 * processcache.MB
-cfg.NoCleanup = true
+cfg.CleanupDisabled = true
 
 cache, err := processcache.NewMemoryCacheFromConfig(cfg)
 ```
@@ -108,6 +109,8 @@ Use `GetAs` for typed reads:
 ```go
 value, ok := processcache.GetAs[string](cache, "key")
 ```
+
+Cached `nil` values are visible through `Get`, but `GetAs` treats them like a typed miss.
 
 ## Options
 
@@ -129,6 +132,8 @@ Defaults:
 
 `Set` accepts at most one meaningful TTL value. If the TTL is omitted or `<= 0`, the entry does not expire. If more than one TTL is passed, only the first value is used.
 
+The cache preserves exact LRU ordering, so operations synchronize through one internal mutex rather than a read-optimized approximate policy.
+
 ## Size Accounting
 
 ProcessCache size accounting is approximate. The default sizer counts key length, common scalar sizes, strings, byte slices, and a conservative fixed overhead for unknown values. Go heap metadata, interface boxing, map growth, and GC behavior mean process memory can exceed the cache's internal byte count.
@@ -142,9 +147,11 @@ stats := cache.Stats()
 fmt.Println(stats.Hits, stats.Misses, stats.CurrentSize)
 ```
 
-`Stats.TypeSizes` is copied before return, so callers cannot mutate internal cache state.
+`Stats.TypeSizes` and `Stats.TypeLimits` are copied before return, so callers cannot mutate internal cache state.
 
 Configured prefixes remain present in `Stats.TypeSizes` even when their current size is zero.
+
+Explicit `Delete` calls increment `Stats.Deletes`, including when the removed item is already expired. Overwrites increment `Stats.Sets` but not `Stats.Deletes` or `Stats.Evictions`.
 
 ## Optional Service Integration
 
@@ -182,6 +189,8 @@ defer cache.Close()
 ```
 
 `Close` is idempotent and waits for the background sweeper to exit.
+
+After `Close`, cache operations still work, but only lazy expiration runs; background cleanup is stopped.
 
 All cache methods are safe for concurrent use.
 

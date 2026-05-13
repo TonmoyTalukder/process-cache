@@ -10,6 +10,8 @@ const (
 	KB int64 = 1024
 	// MB is one mebibyte in bytes.
 	MB int64 = 1024 * KB
+	// GB is one gibibyte in bytes.
+	GB int64 = 1024 * MB
 )
 
 var (
@@ -48,8 +50,8 @@ type Config struct {
 	Clock Clock
 	// Metrics controls whether atomic counters are updated.
 	Metrics bool
-	// NoCleanup disables the background expiration sweeper.
-	NoCleanup bool
+	// CleanupDisabled disables the background expiration sweeper.
+	CleanupDisabled bool
 }
 
 // TypeLimit reserves part of the cache budget for keys with a given prefix.
@@ -62,9 +64,11 @@ type TypeLimit struct {
 
 // Stats is a point-in-time view of cache counters and capacity usage.
 //
-// Len, CurrentSize, MaxSize, and TypeSizes are captured together under lock.
-// Counter fields are monotonic atomic snapshots and may be slightly newer than
-// the size fields in the same return value.
+// Len, CurrentSize, MaxSize, TypeSizes, and TypeLimits are captured together
+// under lock. Counter fields are monotonic atomic snapshots. Clear resets the
+// stored entries but does not reset the lifetime counters in this struct.
+// Delete counts explicit removals, including removing an already-expired item.
+// Overwriting an existing key increments Sets but not Deletes or Evictions.
 type Stats struct {
 	Hits        uint64
 	Misses      uint64
@@ -81,17 +85,23 @@ type Stats struct {
 	MaxSize int64
 	// TypeSizes reports per-prefix usage, including configured empty prefixes.
 	TypeSizes map[string]int64
+	// TypeLimits reports the configured per-prefix byte budgets.
+	TypeLimits map[string]int64
 }
 
 // Option mutates a cache Config during construction.
 type Option func(*Config)
 
 // Sizer estimates the cache cost of one entry.
+//
+// Implementations must not call back into the cache; doing so may deadlock.
 type Sizer interface {
 	SizeOf(key string, value any) int64
 }
 
 // Clock provides time to the cache for expiration logic.
+//
+// Implementations must not call back into the cache; doing so may deadlock.
 type Clock interface {
 	Now() time.Time
 }
