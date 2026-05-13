@@ -21,7 +21,7 @@ jobs:
         with:
           go-version: ${{ matrix.go-version }}
       - shell: bash
-        run: test -z "$(gofmt -l processcache.go internal cmd test)"
+        run: 'test -z "$(gofmt -l processcache.go internal cmd test)"'
       - shell: bash
         run: go build ./...
       - shell: bash
@@ -54,15 +54,15 @@ jobs:
           cd test/e2e/consumer
           go test ./...
       - shell: bash
-        run: go test -run=^$ -bench=. -benchmem ./...
+        run: 'go test -run=^$ -bench=. -benchmem ./...'
       - shell: bash
-        run: go install honnef.co/go/tools/cmd/staticcheck@v0.6.1
+        run: 'go install honnef.co/go/tools/cmd/staticcheck@v0.6.1'
       - shell: bash
-        run: "$(go env GOPATH)/bin/staticcheck" ./...
+        run: '"$(go env GOPATH)/bin/staticcheck" ./...'
       - shell: bash
-        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+        run: 'go install golang.org/x/vuln/cmd/govulncheck@v1.1.4'
       - shell: bash
-        run: "$(go env GOPATH)/bin/govulncheck" ./...
+        run: '"$(go env GOPATH)/bin/govulncheck" ./...'
 
   race-and-docker:
     name: Race And Docker
