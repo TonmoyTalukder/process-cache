@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+      - run: gofmt -w processcache.go internal cmd test
+      - run: git diff --exit-code
+      - run: ./scripts/test.sh
+      - run: ./scripts/race.sh
+      - run: ./scripts/bench.sh
+      - run: docker build --target test -t process-cache:test .
+      - run: ./scripts/docker-test.sh
+      - run: docker compose config

@@ -1,0 +1,9 @@
+.git
+.github
+.gocache
+bin
+coverage.out
+*.test
+.DS_Store
+tmp
+dist

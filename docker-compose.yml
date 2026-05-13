@@ -1,0 +1,18 @@
+services:
+  test:
+    build:
+      context: .
+      target: test
+    command: go test ./...
+
+  race:
+    build:
+      context: .
+      target: test
+    command: go test -race ./...
+
+  bench:
+    build:
+      context: .
+      target: test
+    command: go test -bench=. -benchmem ./...

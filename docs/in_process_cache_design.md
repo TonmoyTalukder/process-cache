@@ -16,6 +16,8 @@ The repository keeps one root Go file, `processcache.go`, as the public facade. 
 
 Build **ProcessCache** as a distributable Go package. The repository and module path use the Go-friendly kebab-case name `process-cache`, while the public package identifier is `processcache`.
 
+ProcessCache targets Go 1.24 or newer.
+
 It is installable in any Go project with:
 
 ```sh
@@ -51,17 +53,11 @@ process-cache/
 │
 ├── internal/
 │   ├── processcache/
-│   │   ├── cache.go             # internal Cache-compatible implementation types
-│   │   ├── memory.go            # MemoryCache implementation
-│   │   ├── options.go           # option application and validation
-│   │   ├── config.go            # Config and TypeLimit implementation model
-│   │   ├── item.go              # item model with global/type list elements
-│   │   ├── eviction.go          # global and type-scoped eviction
-│   │   ├── expiration.go        # lazy expiry and sweeper
-│   │   ├── stats.go             # stats counters and snapshots
-│   │   ├── sizer.go             # default sizing
 │   │   ├── clock.go             # real clock
-│   │   └── errors.go            # internal validation helpers
+│   │   ├── config.go            # defaults, options, and validation
+│   │   ├── memory.go            # MemoryCache, LRU, eviction, expiration, stats
+│   │   ├── sizer.go             # default sizing
+│   │   └── types.go             # public/internal types, constants, sentinel errors
 │   │
 │   ├── config/
 │   │   └── config.go            # optional config loader for examples/CLI only
@@ -78,7 +74,8 @@ process-cache/
 │       └── consumer/            # tiny external Go module using go get/replace
 │
 ├── docs/
-│   └── in_process_cache_design.md
+│   ├── in_process_cache_design.md
+│   └── phase.md                 # phase-by-phase implementation checklist
 │
 ├── scripts/
 │   ├── test.sh
@@ -94,6 +91,8 @@ process-cache/
 ├── docker-compose.yml           # local Docker test runner
 ├── .dockerignore
 ├── .gitignore
+├── AGENTS.md                    # agent execution rules
+├── CLAUDE.md                    # Claude-specific pointer to AGENTS.md
 ├── LICENSE
 ├── README.md
 ├── go.mod
@@ -210,14 +209,13 @@ type Config struct {
 type TypeLimit struct {
     Prefix  string
     MaxSize int64
-    Enabled bool
 }
 ```
 
 Options:
 
 ```go
-type Option func(*Config) error
+type Option func(*Config)
 
 func WithMaxSize(bytes int64) Option
 func WithCleanupInterval(interval time.Duration) Option
@@ -249,7 +247,7 @@ Validation rules:
 - `MaxSize` must be greater than zero.
 - `CleanupInterval` must be greater than zero unless cleanup is disabled.
 - Type prefixes must be non-empty.
-- Enabled type limits must be greater than zero.
+- Type limits must be greater than zero.
 - Duplicate prefixes return an error.
 - Overlapping prefixes return an error by default, because `user:` and `user:profile:` create ambiguous accounting.
 
@@ -281,6 +279,7 @@ type MemoryCache struct {
     cleanupDone     chan struct{}
     closeOnce       sync.Once
 
+    metrics bool
     stats statsCounter
 }
 
@@ -328,7 +327,7 @@ Rules:
 - No configured prefix means the item belongs only to the global pool.
 - Exactly one matching prefix means the item is accounted against that type.
 - Overlapping prefixes are rejected during construction.
-- Disabled type limits are ignored.
+- Type limits are enabled by adding them with `WithTypeLimit` or `WithTypeLimits`; omitted prefixes use only the global cache quota.
 
 Type quota behavior:
 
@@ -867,8 +866,8 @@ Mirror the repeatable workflow style used by larger backend projects:
 
 Script behavior:
 
-- `test.sh`: `go test ./...`
-- `race.sh`: `go test -race ./...`
+- `test.sh`: `go test ./...`, then the external consumer test module.
+- `race.sh`: `go test -race ./...`, then the external consumer test module with race detection.
 - `bench.sh`: `go test -bench=. -benchmem ./...`
 - `docker-test.sh`: `docker compose run --rm test`
 
@@ -886,18 +885,18 @@ Docker responsibilities:
 ### Dockerfile
 
 ```dockerfile
-FROM golang:1.24-alpine AS test
+FROM golang:1.24 AS test
 
-WORKDIR /src
-
-RUN apk add --no-cache git ca-certificates
+WORKDIR /app
 
 COPY go.mod ./
 RUN go mod download
 
 COPY . .
 
-CMD ["go", "test", "./..."]
+RUN go test ./...
+
+CMD ["sh", "-c", "go test ./... && go test -race ./... && go test -bench=. -benchmem ./..."]
 ```
 
 The Dockerfile is for test execution, not for publishing a long-running ProcessCache container.
@@ -988,18 +987,19 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go: ["1.22", "1.23", "1.24"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: ${{ matrix.go }}
-      - run: go test ./...
-      - run: go test -race ./...
-      - run: go test -bench=. -benchmem ./...
+          go-version: "1.24.x"
+      - run: gofmt -w processcache.go internal cmd test
+      - run: git diff --exit-code
+      - run: ./scripts/test.sh
+      - run: ./scripts/race.sh
+      - run: ./scripts/bench.sh
       - run: docker build --target test -t process-cache:test .
+      - run: ./scripts/docker-test.sh
+      - run: docker compose config
 ```
 
 Release process:
@@ -1029,6 +1029,7 @@ Release process:
 - Create `go.mod`.
 - Create `processcache.go`, `cmd`, `internal/processcache`, `test`, `docs`, and `scripts`.
 - Add README and license placeholders.
+- Add `AGENTS.md`, `CLAUDE.md`, and `docs/phase.md`.
 - Add Dockerfile, docker-compose.yml, and .dockerignore.
 - Add CI skeleton.
 
