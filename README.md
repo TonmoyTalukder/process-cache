@@ -1,5 +1,9 @@
 # ProcessCache
 
+[![CI](https://github.com/tonmoytalukder/process-cache/actions/workflows/ci.yml/badge.svg)](https://github.com/tonmoytalukder/process-cache/actions/workflows/ci.yml)
+[![pkg.go.dev](https://pkg.go.dev/badge/github.com/tonmoytalukder/process-cache.svg)](https://pkg.go.dev/github.com/tonmoytalukder/process-cache)
+[![Go Report Card](https://goreportcard.com/badge/github.com/tonmoytalukder/process-cache)](https://goreportcard.com/report/github.com/tonmoytalukder/process-cache)
+
 ProcessCache is a bounded, thread-safe, in-process LRU cache for Go applications that need fast local caching without Redis, Memcached, a database, an HTTP server, or any runtime sidecar.
 
 ```go
@@ -13,6 +17,13 @@ Requires Go 1.24 or newer.
 ```sh
 go get github.com/tonmoytalukder/process-cache
 ```
+
+## Stability
+
+ProcessCache follows semantic versioning.
+
+- `v0.x` means the API is usable but may still evolve based on early adoption feedback.
+- `v1.0.0` will mark the start of stable compatibility expectations for the public API.
 
 ## Quick Start
 
@@ -38,7 +49,9 @@ func main() {
 	}
 	defer cache.Close()
 
-	cache.Set("username:tonmoy", true, 5*time.Minute)
+	if !cache.Set("username:tonmoy", true, 5*time.Minute) {
+		panic("cache rejected username entry")
+	}
 
 	exists, ok := processcache.GetAs[bool](cache, "username:tonmoy")
 	fmt.Println(exists, ok)
@@ -80,6 +93,16 @@ Create a cache with:
 cache, err := processcache.NewMemoryCache()
 ```
 
+Or start from the exported config defaults:
+
+```go
+cfg := processcache.DefaultConfig()
+cfg.MaxSize = 32 * processcache.MB
+cfg.NoCleanup = true
+
+cache, err := processcache.NewMemoryCacheFromConfig(cfg)
+```
+
 Use `GetAs` for typed reads:
 
 ```go
@@ -104,9 +127,13 @@ Defaults:
 - Metrics: enabled
 - Type limits: none
 
+`Set` accepts at most one meaningful TTL value. If the TTL is omitted or `<= 0`, the entry does not expire. If more than one TTL is passed, only the first value is used.
+
 ## Size Accounting
 
 ProcessCache size accounting is approximate. The default sizer counts key length, common scalar sizes, strings, byte slices, and a conservative fixed overhead for unknown values. Go heap metadata, interface boxing, map growth, and GC behavior mean process memory can exceed the cache's internal byte count.
+
+The built-in estimator is most accurate for strings, byte slices, booleans, numeric scalars, `time.Time`, and `time.Duration`. If you cache richer structs, slices, or maps and want tighter limits, provide `WithSizer`.
 
 ## Stats
 
@@ -117,19 +144,15 @@ fmt.Println(stats.Hits, stats.Misses, stats.CurrentSize)
 
 `Stats.TypeSizes` is copied before return, so callers cannot mutate internal cache state.
 
+Configured prefixes remain present in `Stats.TypeSizes` even when their current size is zero.
+
 ## Optional Service Integration
 
-Application services can depend on a small local interface and treat `nil` as "cache disabled":
+Application services can depend directly on `processcache.Cache` and treat `nil` as "cache disabled":
 
 ```go
-type KeyValueCache interface {
-	Get(key string) (any, bool)
-	Set(key string, value any, ttl ...time.Duration) bool
-	Delete(key string) bool
-}
-
 type UserService struct {
-	cache KeyValueCache
+	cache processcache.Cache
 }
 
 func (s *UserService) IsUsernameTaken(username string) (bool, error) {
@@ -160,6 +183,8 @@ defer cache.Close()
 
 `Close` is idempotent and waits for the background sweeper to exit.
 
+All cache methods are safe for concurrent use.
+
 ## Redis Comparison
 
 ProcessCache is not a distributed cache. It is intentionally local to one Go process. Use Redis or Memcached when you need shared cache state across processes, persistence, cross-service invalidation, or centralized memory management. Use ProcessCache when you need a zero-infrastructure in-process cache with predictable local LRU behavior.
@@ -179,3 +204,10 @@ Docker:
 docker compose run --rm race
 docker compose run --rm bench
 ```
+
+## Project Docs
+
+- [CHANGELOG](CHANGELOG.md)
+- [CONTRIBUTING](CONTRIBUTING.md)
+- [SECURITY](SECURITY.md)
+- [LICENSE](LICENSE)

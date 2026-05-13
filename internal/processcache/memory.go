@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+// MemoryCache is a bounded, concurrent in-process LRU cache.
 type MemoryCache struct {
 	mu sync.RWMutex
 
@@ -56,11 +57,26 @@ type statsCounter struct {
 	rejections  atomic.Uint64
 }
 
+// NewMemoryCache constructs a MemoryCache from functional options.
 func NewMemoryCache(opts ...Option) (*MemoryCache, error) {
 	cfg, err := newConfig(opts...)
 	if err != nil {
 		return nil, err
 	}
+	return newMemoryCache(cfg), nil
+}
+
+// NewMemoryCacheFromConfig constructs a MemoryCache from an explicit Config.
+//
+// Callers typically start from DefaultConfig and then override selected fields.
+func NewMemoryCacheFromConfig(cfg Config) (*MemoryCache, error) {
+	if err := validateConfig(cfg); err != nil {
+		return nil, err
+	}
+	return newMemoryCache(cfg), nil
+}
+
+func newMemoryCache(cfg Config) *MemoryCache {
 	c := &MemoryCache{
 		items:           make(map[string]*item),
 		globalLRU:       list.New(),
@@ -72,7 +88,7 @@ func NewMemoryCache(opts ...Option) (*MemoryCache, error) {
 		sizer:           cfg.Sizer,
 		clock:           cfg.Clock,
 		cleanupInterval: cfg.CleanupInterval,
-		cleanupDisabled: cfg.cleanupDisabled,
+		cleanupDisabled: cfg.NoCleanup,
 		stopCleanup:     make(chan struct{}),
 		cleanupDone:     make(chan struct{}),
 		metrics:         cfg.Metrics,
@@ -88,9 +104,10 @@ func NewMemoryCache(opts ...Option) (*MemoryCache, error) {
 	} else {
 		close(c.cleanupDone)
 	}
-	return c, nil
+	return c
 }
 
+// Get returns the stored value for key when present and not expired.
 func (c *MemoryCache) Get(key string) (any, bool) {
 	c.mu.RLock()
 	it, ok := c.items[key]
@@ -131,6 +148,10 @@ func (c *MemoryCache) Get(key string) (any, bool) {
 	return value, true
 }
 
+// Set stores value for key and optionally applies one TTL.
+//
+// A missing TTL or a non-positive TTL means the item does not expire. When
+// multiple TTL values are supplied, only the first is used.
 func (c *MemoryCache) Set(key string, value any, ttl ...time.Duration) bool {
 	if key == "" {
 		c.recordRejection()
@@ -186,6 +207,7 @@ func (c *MemoryCache) Set(key string, value any, ttl ...time.Duration) bool {
 	return true
 }
 
+// Delete removes key from the cache when present.
 func (c *MemoryCache) Delete(key string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -198,6 +220,7 @@ func (c *MemoryCache) Delete(key string) bool {
 	return true
 }
 
+// Exists reports whether key is present and not expired.
 func (c *MemoryCache) Exists(key string) bool {
 	c.mu.RLock()
 	it, ok := c.items[key]
@@ -220,6 +243,7 @@ func (c *MemoryCache) Exists(key string) bool {
 	return true
 }
 
+// Clear removes every item from the cache.
 func (c *MemoryCache) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -232,12 +256,14 @@ func (c *MemoryCache) Clear() {
 	}
 }
 
+// Len returns the number of live entries currently tracked.
 func (c *MemoryCache) Len() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return len(c.items)
 }
 
+// Stats returns a snapshot of counters and capacity usage.
 func (c *MemoryCache) Stats() Stats {
 	c.mu.RLock()
 	typeSizes := make(map[string]int64, len(c.typeSizes))
@@ -256,6 +282,7 @@ func (c *MemoryCache) Stats() Stats {
 	return stats
 }
 
+// Close stops the background sweeper and is safe to call more than once.
 func (c *MemoryCache) Close() error {
 	c.closeOnce.Do(func() {
 		if !c.cleanupDisabled {
@@ -356,13 +383,22 @@ func (c *MemoryCache) startCleanup() {
 
 func (c *MemoryCache) cleanupExpired() {
 	now := c.clock.Now()
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	expiredKeys := make([]string, 0)
 	for _, it := range c.items {
 		if it.isExpired(now) {
+			expiredKeys = append(expiredKeys, it.key)
+		}
+	}
+	c.mu.RUnlock()
+
+	for _, key := range expiredKeys {
+		c.mu.Lock()
+		if it, ok := c.items[key]; ok && it.isExpired(now) {
 			c.removeItemLocked(it)
 			c.recordExpiration()
 		}
+		c.mu.Unlock()
 	}
 }
 

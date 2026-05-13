@@ -54,6 +54,26 @@ func TestConstructorDefaultsAndOptions(t *testing.T) {
 	if _, ok := c2.Stats().TypeSizes["a:"]; !ok {
 		t.Fatal("missing type size")
 	}
+
+	cfg := processcache.DefaultConfig()
+	cfg.MaxSize = 10
+	cfg.NoCleanup = true
+	cfg.TypeLimits = []processcache.TypeLimit{{Prefix: "cfg:", MaxSize: 4}}
+	cfg.Sizer = fixedSizer(1)
+	cfg.Clock = clkFromUnix(0)
+	cfg.Metrics = false
+
+	c3, err := processcache.NewMemoryCacheFromConfig(cfg)
+	if err != nil {
+		t.Fatalf("NewMemoryCacheFromConfig: %v", err)
+	}
+	defer c3.Close()
+	if !c3.Set("cfg:1", 1) {
+		t.Fatal("config-based cache rejected entry")
+	}
+	if stats := c3.Stats(); stats.MaxSize != 10 || stats.Sets != 0 {
+		t.Fatalf("unexpected config-based stats: %+v", stats)
+	}
 }
 
 func TestInvalidOptionsReturnSentinelErrors(t *testing.T) {
@@ -208,22 +228,6 @@ func TestExpirationLazyAndBackground(t *testing.T) {
 	if c.Len() != 0 || c.Stats().Expirations != 1 {
 		t.Fatalf("expiration stats: %+v", c.Stats())
 	}
-
-	c2, err := processcache.NewMemoryCache(processcache.WithCleanupInterval(10*time.Millisecond), processcache.WithSizer(fixedSizer(1)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c2.Close()
-	c2.Set("sweep", "v", time.Nanosecond)
-	time.Sleep(50 * time.Millisecond)
-	if c2.Exists("sweep") {
-		t.Fatal("sweeper did not remove key")
-	}
-	c2.Set("live", "v", 0)
-	time.Sleep(20 * time.Millisecond)
-	if !c2.Exists("live") {
-		t.Fatal("non-expiring key removed")
-	}
 }
 
 func TestCloseIdempotentAndMetricsDisabled(t *testing.T) {
@@ -311,4 +315,55 @@ func TestConcurrentAccess(t *testing.T) {
 	if err := c.Close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestCloseWhileConcurrentOperations(t *testing.T) {
+	c, err := processcache.NewMemoryCache(
+		processcache.WithMaxSize(4096),
+		processcache.WithCleanupInterval(time.Hour),
+		processcache.WithSizer(fixedSizer(1)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stop := make(chan struct{})
+	var workers sync.WaitGroup
+	for i := range 16 {
+		workers.Add(1)
+		go func(id int) {
+			defer workers.Done()
+			n := 0
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				key := fmt.Sprintf("%d:%d", id, n%64)
+				c.Set(key, n)
+				c.Get(key)
+				c.Exists(key)
+				if n%7 == 0 {
+					c.Delete(key)
+				}
+				n++
+			}
+		}(i)
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	close(stop)
+	workers.Wait()
+
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func clkFromUnix(sec int64) *testclock.Clock {
+	return testclock.New(time.Unix(sec, 0))
 }

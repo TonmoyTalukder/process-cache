@@ -4,8 +4,14 @@ import "time"
 
 const itemOverhead int64 = 64
 
+// DefaultSizer provides fast approximate entry sizing.
+//
+// It accounts directly for common scalar types, strings, byte slices, and a
+// fixed fallback for unknown value shapes. Callers storing richer payloads
+// should provide WithSizer for tighter accounting.
 type DefaultSizer struct{}
 
+// SizeOf returns an approximate size for one cache entry.
 func (DefaultSizer) SizeOf(key string, value any) int64 {
 	size := int64(len(key)) + itemOverhead
 	switch v := value.(type) {

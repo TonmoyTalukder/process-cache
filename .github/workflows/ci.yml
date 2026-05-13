@@ -5,18 +5,77 @@ on:
   pull_request:
 
 jobs:
-  test:
+  verify:
+    name: Verify (${{ matrix.os }}, ${{ matrix.go-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        go-version: ['1.24.x', 'stable']
+    env:
+      GOCACHE: ${{ github.workspace }}/.gocache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+      - shell: bash
+        run: test -z "$(gofmt -l processcache.go internal cmd test)"
+      - shell: bash
+        run: go build ./...
+      - shell: bash
+        run: go test ./...
+      - shell: bash
+        run: |
+          cd test/e2e/consumer
+          go test ./...
+
+  quality:
+    name: Quality
     runs-on: ubuntu-latest
+    env:
+      GOCACHE: ${{ github.workspace }}/.gocache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - shell: bash
+        run: go mod tidy
+      - shell: bash
+        run: git diff --exit-code
+      - shell: bash
+        run: go vet ./...
+      - shell: bash
+        run: go test -coverprofile=coverage.out ./...
+      - shell: bash
+        run: |
+          cd test/e2e/consumer
+          go test ./...
+      - shell: bash
+        run: go test -run=^$ -bench=. -benchmem ./...
+      - shell: bash
+        run: go install honnef.co/go/tools/cmd/staticcheck@latest
+      - shell: bash
+        run: "$(go env GOPATH)/bin/staticcheck" ./...
+      - shell: bash
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - shell: bash
+        run: "$(go env GOPATH)/bin/govulncheck" ./...
+
+  race-and-docker:
+    name: Race And Docker
+    runs-on: ubuntu-latest
+    env:
+      GOCACHE: ${{ github.workspace }}/.gocache
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.24.x'
-      - run: gofmt -w processcache.go internal cmd test
-      - run: git diff --exit-code
-      - run: ./scripts/test.sh
-      - run: ./scripts/race.sh
-      - run: ./scripts/bench.sh
+      - shell: bash
+        run: ./scripts/race.sh
       - run: docker build --target test -t process-cache:test .
       - run: ./scripts/docker-test.sh
       - run: docker compose config
