@@ -1,4 +1,22 @@
-// Package processcache provides a bounded, thread-safe, in-process LRU cache.
+// Package processcache provides a bounded, thread-safe, in-process LRU cache
+// for Go applications that need fast local caching without Redis, Memcached,
+// a database, an HTTP server, or any runtime sidecar.
+//
+// Example usage:
+//
+//	cache, err := processcache.NewMemoryCache(
+//		processcache.WithCleanupDisabled(),
+//		processcache.WithMaxSize(10*processcache.MB),
+//	)
+//	if err != nil {
+//		panic(err)
+//	}
+//	defer cache.Close()
+//
+//	cache.Set("user:1", "Tonmoy", time.Minute)
+//
+//	name, ok := processcache.GetAs[string](cache, "user:1")
+//	fmt.Println(name, ok)
 package processcache
 
 import (
