@@ -73,6 +73,36 @@ func main() {
 - Configurable `Sizer` and `Clock`.
 - Zero runtime external dependencies.
 
+## When To Use ProcessCache
+
+Use ProcessCache when your Go service needs a small, fast, process-local cache and adding external infrastructure would create more operational cost than value. It is a good fit for data that is safe to recompute, reload, or fetch again after an eviction, expiration, deploy, or process restart.
+
+ProcessCache is especially useful when you want:
+
+- Lower latency for hot reads inside a single Go process.
+- Fewer repeated database, API, or filesystem calls for short-lived data.
+- A bounded memory footprint instead of an unbounded map.
+- Deterministic LRU eviction under a global size budget.
+- Per-prefix quotas so one key family cannot consume the whole cache.
+- A zero-dependency cache that works in CLIs, workers, batch jobs, and HTTP services.
+- A cache abstraction that can be injected into services and disabled with `nil`.
+
+## Use Cases
+
+- **Username, slug, or email availability checks:** Cache short-lived lookup results such as `username:tonmoy` to reduce repeated validation queries during signup or profile editing flows.
+- **Session and token metadata:** Keep frequently accessed token introspection, session flags, or permission snapshots local to the process with a TTL.
+- **Reference data:** Cache rarely changing data such as feature flags, plan limits, country lists, category trees, or configuration records after loading them from a database or API.
+- **Expensive computation results:** Store deterministic function outputs, rendered fragments, parsed payloads, or validation results that are safe to recompute.
+- **External API response shielding:** Reduce repeated calls to rate-limited or latency-sensitive services when responses can be reused briefly.
+- **Background workers and queue consumers:** Reuse small lookup results across many jobs in the same worker process without running a shared cache service.
+- **Development and internal tools:** Add bounded caching to scripts, CLIs, admin tools, and prototypes without introducing Redis or Memcached.
+
+For the design story and tradeoffs behind the package, read the [ProcessCache case study](https://www.tonmoytalukder.com/case-study/process-cache).
+
+## When Not To Use It
+
+ProcessCache is intentionally local to one process. Use Redis, Memcached, or another distributed cache when you need shared cache state across multiple processes, persistence, cross-service invalidation, centralized memory management, atomic distributed operations, or cache data that must survive restarts.
+
 ## API
 
 ```go
@@ -216,6 +246,7 @@ docker compose run --rm bench
 
 ## Project Docs
 
+- [Case Study](https://www.tonmoytalukder.com/case-study/process-cache)
 - [Algorithm Explained](docs/algorithm.md)
 - [CHANGELOG](CHANGELOG.md)
 - [CONTRIBUTING](CONTRIBUTING.md)
